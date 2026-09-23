@@ -78,6 +78,87 @@ Godot MCP enables AI agents to launch the Godot editor, run projects, capture de
   - Get UID for specific files
   - Update UID references by resaving resources
 
+## Extended tool set
+
+This checkout extends the upstream server with 36 additional tools (**50 total**), grouped as follows.
+Tools carry MCP annotations: read-only tools are marked `readOnlyHint`, destructive ones
+(`delete_node`, `remove_autoload`, `uninstall_editor_bridge`) `destructiveHint`, and re-runnable
+ones `idempotentHint`.
+
+**Read & validate (the missing feedback loop)**
+
+- `read_scene` — full node tree of a scene: paths, types, groups, scripts, properties, **signal connections**
+- `validate_project` — parse-checks every `.gd` with line-accurate errors and load-checks every scene
+- `search_project` — filename + content search (literal or regex) across the project
+- `get_project_setting` / `set_project_setting` — read/write `project.godot` while preserving comments
+- `get_editor_log` — editor output captured at launch plus any log files on disk
+- `describe_class` — ClassDB introspection: properties (type + default), methods (signature + flags),
+  signals, inheritance chain; `filter` narrows huge classes like `Control`
+- `analyze_project` — project linter: main-scene sanity, script compile failures, orphan nodes,
+  never-referenced scripts, unused resources — run before declaring work finished
+- `doctor` — one-call diagnosis: Godot binary/version, bridge script, project validity, main scene,
+  write access, bridge round-trip, input-bridge port. **Call this first when something is not working.**
+
+**Script workflow**
+
+- `create_script` / `edit_script` — create from template or content; targeted find-and-replace edits
+- `attach_script` — attach a script to a node (rejects scripts that do not compile)
+
+**Scene editing**
+
+- `set_node_property`, `delete_node`, `move_node`, `duplicate_node`, `instantiate_scene`
+- Values accept smart strings: `"Vector2(100, 200)"`, `"#ff0000"`, `"res://icon.svg"`, `"true"`
+- `edit_scene` — batch of add/delete/move/set ops applied in **one** Godot launch, all-or-nothing:
+  a failing op aborts without touching the file
+- `set_node_property` defaults to a surgical `.tscn` text edit (only the one property line changes,
+  round-trip formatting is never involved); forced `mode: "text"` refuses instead of silently falling back
+- Every scene write is atomic: temp file → verify it loads → keep one `.bak` in `.godot/mcp_backups/` → swap
+- Mutations are serialized per project, so parallel tool calls cannot race on the same scene
+- `connect_signal` / `disconnect_signal` — wire a node's signal to a script method and persist it;
+  validates the signal, the target, and that the target script defines the method (idempotent)
+- `add_autoload` / `remove_autoload` / `list_autoloads` — `[autoload]` management in `project.godot`
+  that preserves every other setting and comment
+
+**Editor integration (the editor bridge plugin)**
+
+- `install_editor_bridge` / `uninstall_editor_bridge` — drop a `@tool` plugin into
+  `addons/mcp_editor_bridge/` and enable it in `project.godot` (idempotent, settings-preserving)
+- `editor_status` — is the editor running, what scenes are open, what is selected
+  (`connected: false` with no editor is data, not an error)
+- `editor_screenshot` — PNG of the whole editor window (not just the game viewport)
+- While the plugin is active and has the target scene open, scene mutations
+  (`add_node`, `set_node_property`, `delete_node`, `move_node`, `connect_signal`, `disconnect_signal`)
+  are **routed through the editor**: applied with `EditorUndoRedo` (so Ctrl+Z works) and saved by the
+  editor itself — no more writes behind the editor's back. Anything ambiguous falls back to the file path.
+- The plugin listens on `127.0.0.1:6508` and requires a per-run token from
+  `.godot/mcp_editor_bridge.token`.
+
+**Run, see, and touch the game**
+
+- `run_headless` — headless execution with full output and exit code
+- `run_tests` — auto-detects **GUT or gdUnit4**; GUT runs accept `dir`/`filter` and always leave a
+  JUnit XML report in `.godot/mcp_reports/` for CI
+- `screenshot` — renders a scene and saves a PNG of the game window
+- `send_input` — injects key/mouse/action/text events into a running game and can capture it,
+  via a temporary bridge started by `run_project {withInputBridge: true}` (bridge files are
+  removed automatically when the game stops). The bridge listens on `127.0.0.1:6507` and rejects
+  commands without the per-run token.
+- `get_debug_output` — while running, live output; after exit, the final output plus `exitCode`
+  instead of an error
+
+**Project config, resources & builds**
+
+- `read_resource` — text content for text formats, class/property dump for binary (runs `--import` if needed)
+- `write_resource` — raw text write, or build a resource from a class name + properties
+- `add_input_action` — register an InputMap action written directly into `project.godot`
+  (never round-trips settings through a headless `ProjectSettings.save()` — that silently destroys them)
+- `list_export_presets` — presets from `export_presets.cfg` (name, platform, filter, saved `export_path`)
+- `export_project` — headless `--export-release`/`--export-debug` against a preset; refuses to
+  overwrite an existing output unless `overwrite: true`, and surfaces missing export templates
+
+Run the full suite with `node .scratch/test_driver.mjs` after `npm run build` (150 assertions,
+including a headless-editor round trip against an isolated project clone).
+
 ## Requirements
 
 - [Godot Engine](https://godotengine.org/download) installed on your system
@@ -224,6 +305,11 @@ The Godot MCP server uses a bundled GDScript approach for complex operations:
 2. **Bundled Operations Script**: Complex operations like creating scenes or adding nodes use a single, comprehensive GDScript file (`godot_operations.gd`) that handles all operations.
 
 The bundled script accepts operation type and parameters as JSON, allowing for flexible and dynamic operation execution without generating temporary files for each operation.
+
+3. **Editor bridge plugin (optional)**: `install_editor_bridge` drops a `@tool` plugin into the
+   project that listens on `127.0.0.1:6508`. When it is running and has the target scene open,
+   scene mutations go through `EditorUndoRedo` + the editor's own save instead of writing `.tscn`
+   files directly. Every bridge (editor on 6508, in-game input on 6507) authenticates with a token.
 
 ## Troubleshooting
 

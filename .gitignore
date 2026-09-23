@@ -26,3 +26,8 @@ Thumbs.db
 
 # Coverage directory
 coverage/
+
+# Local test scratch (driver stays tracked; artifacts ignored)
+.scratch/*.png
+.scratch/*.log
+.scratch/*.before_input
